@@ -2210,6 +2210,10 @@
     // turns off shadows + antialiasing and the extra area light.
     const LOW_MEM = Math.min(window.innerWidth, window.innerHeight) < 820
       || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    // PHONE SHARPNESS (raise for sharper, lower if the 3D view ever drops again):
+    const PHONE_PAGE_SCALE = 1.0;       // page texture resolution (1.0 = 512x768, desktop uses 1.1-1.25)
+    const PHONE_TEX_SCALE = 0.75;       // covers/spine/back, fraction of full size (was 0.5)
+    const PHONE_MAX_PIXEL_RATIO = 2;    // render resolution cap (was 1.25)
     let qualityScale = 1;
     const PERF_HUD = /[?&]perf=1/.test(location.search);
     let hudFrames = 0;
@@ -2567,8 +2571,8 @@
         const img = texture.image;
         if (img && img.width >= 360 && typeof img.getContext === "function") {
           const small = document.createElement("canvas");
-          small.width = Math.max(1, img.width >> 1);
-          small.height = Math.max(1, img.height >> 1);
+          small.width = Math.max(1, Math.round(img.width * PHONE_TEX_SCALE));
+          small.height = Math.max(1, Math.round(img.height * PHONE_TEX_SCALE));
           const sctx = small.getContext("2d");
           sctx.imageSmoothingQuality = "high";
           sctx.drawImage(img, 0, 0, small.width, small.height);
@@ -3006,7 +3010,7 @@
         const logicalWidth = 512;
         const logicalHeight = 768;
         const photoItem = photoForPage(book, pageIndex);
-        const resScale = LOW_MEM ? (photoItem ? 0.8 : 0.7) : (photoItem ? 1.25 : 1.1); // PHONE: ~2.5x less memory per page
+        const resScale = LOW_MEM ? (photoItem ? PHONE_PAGE_SCALE * 1.15 : PHONE_PAGE_SCALE) : (photoItem ? 1.25 : 1.1);
         canvas.width = logicalWidth * resScale;
         canvas.height = logicalHeight * resScale;
         const ctx = canvas.getContext("2d");
@@ -3140,6 +3144,10 @@
           anisotropy: 16
         });
         texture.name = `${book.id}-interior-page-${pageIndex + 1}`;
+        if (LOW_MEM) {
+          texture.generateMipmaps = false;
+          texture.minFilter = THREE.LinearFilter;
+        }
         if (photoItem) {
           loadPhoto(photoItem.src).then((image) => {
             if (!image) return;
@@ -5966,7 +5974,7 @@
       viewHeight = window.innerHeight;
       configureResponsiveTargets();
       renderer.setSize(viewWidth, viewHeight, false);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, LOW_MEM ? 1.25 : 1.5) * qualityScale);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, LOW_MEM ? PHONE_MAX_PIXEL_RATIO : 1.5) * qualityScale);
       camera.aspect = viewWidth / viewHeight;
       camera.updateProjectionMatrix();
 
@@ -6162,7 +6170,7 @@
       try {
         renderer = new THREE.WebGLRenderer({
           canvas,
-          antialias: !LOW_MEM, // PHONE: MSAA buffer costs a lot of GPU memory
+          antialias: true, // smooth edges (also on phones)
           alpha: true,
           powerPreference: LOW_MEM ? "default" : "high-performance"
         });
