@@ -1672,6 +1672,8 @@
       }
     }
   </style>
+  <!-- iPad fix: polyfill for import maps (Safari/iPadOS older than 16.4 has none -> blank page) -->
+  <script async src="https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
   <script type="importmap">
     {
       "imports": {
@@ -2208,8 +2210,15 @@
     // PHONE MEMORY FIX: phones (especially iPhone / in-app browsers) kill the 3D view when
     // textures use too much memory ("lost its graphics context"). LOW_MEM halves big textures,
     // turns off shadows + antialiasing and the extra area light.
-    const LOW_MEM = Math.min(window.innerWidth, window.innerHeight) < 820
-      || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    // iPad fix: iPadOS Safari/Chrome report a *Mac* user agent ("Macintosh"), so /iPad/ never matched,
+    // and an iPad (10th gen = 820x1180) is not "< 820" -> it was treated like a desktop and ran out of
+    // GPU memory. Detect iPadOS via touch points, and treat every touch device as low-memory.
+    const IS_IPADOS = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+    const IS_TOUCH = IS_IPADOS
+      || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+      || (window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+    const IS_TABLET = IS_TOUCH && Math.min(window.innerWidth, window.innerHeight) >= 600;
+    const LOW_MEM = IS_TOUCH || Math.min(window.innerWidth, window.innerHeight) <= 820;
     // PHONE SHARPNESS (raise for sharper, lower if the 3D view ever drops again):
     const PHONE_PAGE_SCALE = 1.0;       // page texture resolution (1.0 = 512x768, desktop uses 1.1-1.25)
     const PHONE_TEX_SCALE = 0.75;       // covers/spine/back, fraction of full size (was 0.5)
@@ -5974,7 +5983,7 @@
       viewHeight = window.innerHeight;
       configureResponsiveTargets();
       renderer.setSize(viewWidth, viewHeight, false);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, LOW_MEM ? PHONE_MAX_PIXEL_RATIO : 1.5) * qualityScale);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, LOW_MEM ? (IS_TABLET ? 1.5 : PHONE_MAX_PIXEL_RATIO) : 1.5) * qualityScale);
       camera.aspect = viewWidth / viewHeight;
       camera.updateProjectionMatrix();
 
@@ -6155,7 +6164,7 @@
       );
 
       try {
-        await document.fonts.load("600 82px Inter");
+        await Promise.race([document.fonts.load("600 82px Inter"), new Promise((r) => setTimeout(r, 2500))]);
       } catch (error) {
         // The system sans-serif fallback keeps the interface usable offline.
       }
