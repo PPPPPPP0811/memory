@@ -3014,7 +3014,32 @@
       const inkColor = new THREE.Color(book.color).lerp(new THREE.Color(0x211b16), 0.62);
       const ink = `#${inkColor.getHexString()}`;
 
-      return Array.from({ length: pageCount }, (_, pageIndex) => {
+      // MEMORY FIX (iPad): the 16 interior pages of every book used to be painted up-front
+      // (6 books x 16 pages = 96 big canvases + 96 GPU textures) which made iPadOS kill the
+      // WebGL context. Now each page starts as a tiny 4x4 placeholder and is only painted when
+      // its book is opened (userData.paint) and freed again when the book goes back on the
+      // shelf (userData.release). Desktop still paints everything up-front.
+      const textures = Array.from({ length: pageCount }, (_, pageIndex) => {
+        const placeholder = document.createElement("canvas");
+        placeholder.width = 4;
+        placeholder.height = 4;
+        const placeholderCtx = placeholder.getContext("2d");
+        placeholderCtx.fillStyle = "#ece3d2";
+        placeholderCtx.fillRect(0, 0, 4, 4);
+        const texture = configureCanvasTexture(new THREE.CanvasTexture(placeholder), {
+          keep: true,
+          anisotropy: 16
+        });
+        texture.name = `${book.id}-interior-page-${pageIndex + 1}`;
+        if (LOW_MEM) {
+          texture.generateMipmaps = false;
+          texture.minFilter = THREE.LinearFilter;
+        }
+        let generation = 0;
+
+        const paint = () => {
+        if (texture.image !== placeholder) return;
+        const gen = ++generation;
         const canvas = document.createElement("canvas");
         const logicalWidth = 512;
         const logicalHeight = 768;
@@ -3148,18 +3173,17 @@
         ctx.globalAlpha = 0.62;
         ctx.fillRect(48, logicalHeight - 48, logicalWidth - 96, 1);
         ctx.globalAlpha = 1;
-        const texture = configureCanvasTexture(new THREE.CanvasTexture(canvas), {
-          keep: true,
-          anisotropy: 16
-        });
-        texture.name = `${book.id}-interior-page-${pageIndex + 1}`;
-        if (LOW_MEM) {
-          texture.generateMipmaps = false;
-          texture.minFilter = THREE.LinearFilter;
-        }
+        // swap the placeholder for the real page (dispose first so the GPU texture is re-allocated)
+        texture.dispose();
+        texture.image = canvas;
+        texture.needsUpdate = true;
         if (photoItem) {
           loadPhoto(photoItem.src).then((image) => {
             if (!image) return;
+            if (gen !== generation || texture.image !== canvas) {
+              releasePhoto(photoItem.src, image); // page was released while the photo loaded
+              return;
+            }
             ctx.setTransform(resScale, 0, 0, resScale, 0, 0);
             ctx.globalAlpha = 1;
             ctx.letterSpacing = "0px";
@@ -3211,8 +3235,24 @@
             releasePhoto(photoItem.src, image);
           });
         }
+        };
+
+        const release = () => {
+          generation += 1;
+          if (texture.image === placeholder) return;
+          const old = texture.image;
+          texture.dispose();
+          texture.image = placeholder;
+          texture.needsUpdate = true;
+          if (old && old.width) { old.width = 1; old.height = 1; }
+        };
+
+        texture.userData.paint = paint;
+        texture.userData.release = release;
         return texture;
       });
+      if (!LOW_MEM) textures.forEach((texture) => texture.userData.paint());
+      return textures;
     }
 
     function makeContactShadowTexture() {
@@ -5511,6 +5551,13 @@
           ? origin
           : inspectButton;
       activeBook = bookRigs[selectedIndex];
+      // MEMORY FIX: only the opened book keeps its interior page textures
+      bookRigs.forEach((rig) => {
+        rig.interiorPageTextures.forEach((t) => {
+          if (rig === activeBook) t.userData.paint?.();
+          else if (LOW_MEM) t.userData.release?.();
+        });
+      });
       activeBook.contactShadow.visible = false;
       populateDetail(activeBook.data);
       updatePageControls(false);
@@ -5714,6 +5761,7 @@
       browseUi.inert = false;
       mode = "hero";
       transitionTime = 0;
+      if (LOW_MEM) activeBook.interiorPageTextures.forEach((t) => t.userData.release?.());
       activeBook = null;
       liveRegion.textContent = `${BOOKS[selectedIndex].title} returned to the shelf.`;
       requestAnimationFrame(() => focusReturnTarget?.focus?.({ preventScroll: true }));
@@ -6179,7 +6227,7 @@
       try {
         renderer = new THREE.WebGLRenderer({
           canvas,
-          antialias: true, // smooth edges (also on phones)
+          antialias: !IS_TOUCH, // MSAA buffers are costly on iPad; the 1.5x pixel ratio smooths edges instead
           alpha: true,
           powerPreference: LOW_MEM ? "default" : "high-performance"
         });
